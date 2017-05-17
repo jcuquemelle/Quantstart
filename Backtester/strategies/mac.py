@@ -3,13 +3,15 @@
 # mac.py
 
 import datetime
+import queue
+
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from strategy import Strategy
 from event import SignalEvent
 from backtest import Backtest
-from data import HistoricCSVDataHandler
+from data import HistoricCSVDataHandler, HistoricDatabaseDataHandler
 from execution import SimulatedExecutionHandler
 from portfolio import Portfolio
 
@@ -47,7 +49,7 @@ class MovingAverageCrossStrategy(Strategy):
         bought = {}
         for s in self.symbol_list:
             bought[s] = 'OUT'
-            return bought
+        return bought
 
     def calculate_signals(self, event):
         """
@@ -61,7 +63,7 @@ class MovingAverageCrossStrategy(Strategy):
         if event.type == 'MARKET':
             for s in self.symbol_list:
                 bars = self.bars.get_latest_bars_values(
-                    s, "adj_close", N=self.long_window
+                    s, "adj_close_price", N=self.long_window
                 )
                 bar_date = self.bars.get_latest_bar_datetime(s)
                 if bars is not None and bars != []:
@@ -70,29 +72,31 @@ class MovingAverageCrossStrategy(Strategy):
                     symbol = s
                     dt = datetime.datetime.utcnow()
                     if short_sma > long_sma and self.bought[s] == "OUT":
-                        print("LONG: %s" % bar_date)
+                        print("LONG: %s, %s" % (s, bar_date))
                         sig_dir = 'LONG'
                         signal = SignalEvent(1, symbol, dt, sig_dir, 1.0)
                         self.events.put(signal)
                         self.bought[s] = 'LONG'
                     elif short_sma < long_sma and self.bought[s] == "LONG":
-                        print("SHORT: %s" % bar_date)
+                        print("SHORT: %s, %s" % (s, bar_date))
                         sig_dir = 'EXIT'
                         signal = SignalEvent(1, symbol, dt, sig_dir, 1.0)
                         self.events.put(signal)
                         self.bought[s] = 'OUT'
 
 
-
 if __name__ == "__main__":
-    csv_dir = '/path/to/your/csv/file' # CHANGE THIS!
-    symbol_list = ['MMS.PA']
+
     initial_capital = 30000.0
     heartbeat = 0.0
     start_date = datetime.datetime(1990, 1, 1, 0, 0, 0)
-    backtest = Backtest(
-        csv_dir, symbol_list, initial_capital, heartbeat,
-        start_date, HistoricCSVDataHandler, SimulatedExecutionHandler,
+
+    events = queue.Queue()
+    dataHandler = HistoricDatabaseDataHandler()
+
+    backtest = Backtest( events,
+        initial_capital, heartbeat,
+        start_date, dataHandler, SimulatedExecutionHandler,
         Portfolio, MovingAverageCrossStrategy
     )
     backtest.simulate_trading()

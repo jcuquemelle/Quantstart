@@ -6,13 +6,14 @@ import pprint
 import queue
 import time
 
+
 class Backtest(object):
     """
     Enscapsulates the settings and components for carrying out
     an event-driven backtest.
     """
     def __init__(
-    self, csv_dir, symbol_list, initial_capital,
+    self, events, initial_capital,
     heartbeat, start_date, data_handler,
     execution_handler, portfolio, strategy
     ):
@@ -30,16 +31,15 @@ class Backtest(object):
         and prior positions.
         strategy - (Class) Generates signals based on market data.
         """
-        self.csv_dir = csv_dir
-        self.symbol_list = symbol_list
+        self.symbol_list = data_handler.get_symbol_list()
         self.initial_capital = initial_capital
         self.heartbeat = heartbeat
         self.start_date = start_date
-        self.data_handler_cls = data_handler
+        self.data_handler = data_handler
         self.execution_handler_cls = execution_handler
         self.portfolio_cls = portfolio
         self.strategy_cls = strategy
-        self.events = queue.Queue()
+        self.events = events
         self.signals = 0
         self.orders = 0
         self.fills = 0
@@ -55,8 +55,6 @@ class Backtest(object):
         print(
             "Creating DataHandler, Strategy, Portfolio and ExecutionHandler"
         )
-        self.data_handler = self.data_handler_cls(self.events, self.csv_dir,
-                                                  self.symbol_list)
         self.strategy = self.strategy_cls(self.data_handler, self.events)
         self.portfolio = self.portfolio_cls(self.data_handler, self.events,
                                             self.start_date,
@@ -74,7 +72,7 @@ class Backtest(object):
             print (i)
             # Update the market bars
             if self.data_handler.continue_backtest:
-                self.data_handler.update_bars()
+                self.data_handler.update_bars(self.events)
             else:
                 break
             # Handle the events

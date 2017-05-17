@@ -23,6 +23,13 @@ class DataHandler(object):
     __metaclass__ = ABCMeta
 
     @abstractmethod
+    def get_symbol_list(self):
+        """
+        Returns the last bar updated.
+        """
+        raise NotImplementedError("Should implement get_latest_bar()")
+
+    @abstractmethod
     def get_latest_bar(self, symbol):
         """
         Returns the last bar updated.
@@ -60,7 +67,7 @@ class DataHandler(object):
         raise NotImplementedError("Should implement get_latest_bars_values()")
 
     @abstractmethod
-    def update_bars(self):
+    def update_bars(self, events):
         """
         Pushes the latest bars to the bars_queue for each symbol
         in a tuple OHLCVI format: (datetime, open, high, low,
@@ -69,63 +76,34 @@ class DataHandler(object):
         raise NotImplementedError("Should implement update_bars()")
 
 
-class HistoricCSVDataHandler(DataHandler):
-    """
-    HistoricCSVDataHandler is designed to read CSV files for
-    each requested symbol from disk and provide an interface
-    to obtain the "latest" bar in a manner identical to a live
-    trading interface.
-    """
+class dfDataHandler(DataHandler):
 
-    def __init__(self, events, csv_dir, symbol_list):
-        """
-        Initialises the historic data handler by requesting
-        the location of the CSV files and a list of symbols.
-        It will be assumed that all files are of the form
-        ’symbol.csv’, where symbol is a string in the list.
-        Parameters:
-        events - The Event Queue.
-        csv_dir - Absolute directory path to the CSV files.
-        symbol_list - A list of symbol strings.
-        """
-
-        self.events = events
-        self.csv_dir = csv_dir
-        self.symbol_list = symbol_list
+    def __init__(self):
         self.symbol_data = {}
         self.latest_symbol_data = {}
+        self.comb_index = None
         self.continue_backtest = True
-        self._open_convert_csv_files()
 
-    def _open_convert_csv_files(self):
-        """
-        Opens the CSV files from the data directory, converting
-        them into pandas DataFrames within a symbol dictionary.
-        For this handler it will be assumed that the data is
-        taken from Yahoo. Thus its format will be respected.
-        """
+    def get_symbol_list(self):
+        return self.symbol_data.keys()
 
-        comb_index = None
-        for s in self.symbol_list:
-            # Load the CSV file with no header information, indexed on date
-            self.symbol_data[s] = pd.io.parsers.read_csv(
-                os.path.join(self.csv_dir, ' % s.csv' % s),
-                header=0, index_col=0, parse_dates=True,
-                names = [ 'datetime', 'open', 'high', 'low', 'close', 'volume', 'adj_close']
-            ).sort()
-            # Combine the index to pad forward values
-            if comb_index is None:
-                comb_index = self.symbol_data[s].index
-            else:
-                comb_index.union(self.symbol_data[s].index)
+    def AddSymbolData(self, symbol, df):
+        self.symbol_data[symbol] = df
 
-            # Set the latest symbol_data to None
-            self.latest_symbol_data[s] = []
+        # Combine the index to pad forward values
+        if self.comb_index is None:
+            self.comb_index = self.symbol_data[symbol].index
+        else:
+            self.comb_index.union(self.symbol_data[symbol].index)
 
+        # Set the latest symbol_data to None
+        self.latest_symbol_data[symbol] = []
+
+    def Finish(self):
         # Reindex the dataframes
-        for s in self.symbol_list:
+        for s in self.symbol_data.keys():
             self.symbol_data[s] = self.symbol_data[s]. \
-                reindex(index=comb_index, method='pad').iterrows()
+                reindex(index=self.comb_index, method='pad').iterrows()
 
     def _get_new_bar(self, symbol):
         """
@@ -134,7 +112,6 @@ class HistoricCSVDataHandler(DataHandler):
 
         for b in self.symbol_data[symbol]:
             yield b
-
 
     def get_latest_bar(self, symbol):
         """
@@ -202,18 +179,123 @@ class HistoricCSVDataHandler(DataHandler):
         else:
             return np.array([getattr(b[1], val_type) for b in bars_list])
 
-    def update_bars(self):
+    def appendToLatest(self,  symbol, bar):
+        self.latest_symbol_data[symbol].append(bar)
+
+    def update_bars(self, events):
         """
         Pushes the latest bar to the latest_symbol_data structure
         for all symbols in the symbol list.
         """
 
-        for s in self.symbol_list:
+        for s in self.symbol_data.keys():
             try:
                 bar = next(self._get_new_bar(s))
             except StopIteration:
                 self.continue_backtest = False
             else:
                 if bar is not None:
-                    self.latest_symbol_data[s].append(bar)
-        self.events.put(MarketEvent())
+                    self.appendToLatest(s, bar)
+        events.put(MarketEvent())
+
+
+class HistoricDatabaseDataHandler(dfDataHandler):
+    """
+    HistoricCSVDataHandler is designed to read securities master database for
+    each requested symbol from disk and provide an interface
+    to obtain the "latest" bar in a manner identical to a live
+    trading interface.
+    """
+
+    def __init__(self):
+        """
+        Initialises the historic data handler by requesting
+        the location of the CSV files and a list of symbols.
+        It will be assumed that all files are of the form
+        ’symbol.csv’, where symbol is a string in the list.
+        Parameters:
+        events - The Event Queue.
+        csv_dir - Absolute directory path to the CSV files.
+        symbol_list - A list of symbol strings.
+        """
+
+        super(HistoricDatabaseDataHandler, self).__init__()
+        self.symbol_list = []
+        self._readFromDB()
+
+    def _readFromDB(self):
+        """
+        get data from the securities master database
+        """
+        import mysql.connector
+        from sqlalchemy import create_engine
+
+        def getDataFor(ticker):
+            sql = """SELECT dp.price_date, dp.adj_close_price
+            FROM symbol AS sym
+            INNER JOIN daily_price AS dp
+            ON dp.symbol_id = sym.id
+            WHERE sym.ticker = '{}'
+            ORDER BY dp.price_date ASC;""".format(ticker)
+            # Create a pandas dataframe from the SQL query
+            engine = create_engine('mysql+mysqlconnector://sec_user:password@localhost/securities_master', echo=False)
+            with engine.connect() as conn, conn.begin():
+                return pd.read_sql_query(sql, con=conn, index_col='price_date')
+
+        engine = create_engine('mysql+mysqlconnector://sec_user:password@localhost/securities_master', echo=False)
+
+        with engine.connect() as con:
+            data = con.execute("SELECT ticker FROM symbol")
+
+        self.symbol_list = [d['ticker'] for d in data]
+
+        for s in self.symbol_list:
+            # Load the CSV file with no header information, indexed on date
+            self.AddSymbolData(s, getDataFor(s))
+
+        self.Finish()
+
+
+class HistoricCSVDataHandler(dfDataHandler):
+    """
+    HistoricCSVDataHandler is designed to read CSV files for
+    each requested symbol from disk and provide an interface
+    to obtain the "latest" bar in a manner identical to a live
+    trading interface.
+    """
+
+    def __init__(self, events, csv_dir, symbol_list):
+        """
+        Initialises the historic data handler by requesting
+        the location of the CSV files and a list of symbols.
+        It will be assumed that all files are of the form
+        ’symbol.csv’, where symbol is a string in the list.
+        Parameters:
+        events - The Event Queue.
+        csv_dir - Absolute directory path to the CSV files.
+        symbol_list - A list of symbol strings.
+        """
+
+        self.events = events
+        self.csv_dir = csv_dir
+        self.symbol_list = symbol_list
+        self.continue_backtest = True
+        self._open_convert_csv_files()
+
+    def _open_convert_csv_files(self):
+        """
+        Opens the CSV files from the data directory, converting
+        them into pandas DataFrames within a symbol dictionary.
+        For this handler it will be assumed that the data is
+        taken from Yahoo. Thus its format will be respected.
+        """
+
+        for s in self.symbol_list:
+            # Load the CSV file with no header information, indexed on date
+            self.AddSymbolData(s, pd.io.parsers.read_csv(
+                os.path.join(self.csv_dir, ' % s.csv' % s),
+                header=0, index_col=0, parse_dates=True,
+                names = [ 'datetime', 'open', 'high', 'low', 'close', 'volume', 'adj_close']
+            ).sort())
+
+        self.Finish()
