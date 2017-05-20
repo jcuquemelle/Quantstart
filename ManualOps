@@ -1,0 +1,32 @@
+TODO: miniconda must not be installed as root
+
+
+PACKAGES INSTALL
+sudo apt-get install mysql-server fbreader
+
+
+
+root passwd: classical for MySql
+
+sudo apt-get install libmysqlclient-dev
+conda install mysqlclient
+
+CREATE DATABASE
+create database and give access to a new user: 
+mysql -u root -p
+
+mysql> CREATE DATABASE securities_master;
+mysql> USE securities_master;
+
+mysql> CREATE USER ’sec_user’@’localhost’ IDENTIFIED BY ’password’;
+mysql> GRANT ALL PRIVILEGES ON securities_master.* TO ’sec_user’@’localhost’;
+mysql> FLUSH PRIVILEGES;
+
+
+conda install yahoo-finance (might not be useful, replaced by 
+conda install pandas-datareader
+conda install SQLAlchemy
+
+
+
+
